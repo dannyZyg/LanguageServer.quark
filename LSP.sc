@@ -2,6 +2,7 @@ LSPConnection {
     classvar <connection;
     classvar <providers, <>preprocessor;
     classvar readyMsg = "***LSP READY***";
+    classvar <handlerThread;
     
     var <>inPort, <>outPort;
     var socket;
@@ -33,6 +34,14 @@ LSPConnection {
         
         settings = this.envirSettings();
         
+        handlerThread = Routine({
+            |f|
+            Environment().push;
+            inf.do {
+                f = f.value.yield; 
+            }
+        });
+        
         if (settings[\enabled].asBoolean) {
             StartUp.add({
                 connection = LSPConnection().start;
@@ -62,7 +71,7 @@ LSPConnection {
         outPort = settings[\outPort];
         outstandingRequests = ();
         workspaceFolders = List();
-
+        
         Log('LanguageServer.quark').level = settings[\logLevel];
         
         this.addDependant({
@@ -90,7 +99,7 @@ LSPConnection {
         
         thisProcess.addRawRecvFunc({
             |msg, time, replyAddr, recvPort|
-            this.prOnReceived(time, replyAddr, msg)
+            this.prOnReceived(time, replyAddr, msg);
         });
         
         // @TODO Is this the only "default" provider we want?
@@ -126,7 +135,7 @@ LSPConnection {
             providers[methodName] = provider;
         }
     }
-
+    
     request {
         |methodName, params|
         providers[methodName] !? {
@@ -268,12 +277,16 @@ LSPConnection {
     prHandleResponse {
         |id, result|
         
-        var response = (
-            id: id,
-            result: result ?? { NilResponse() }
-        );
-        
-        this.prSendMessage(response);
+        // Don't sent empty messages as this produces response
+        // validation errors in some LSP clients (neovim).
+        if (id.notNil or: { result.notNil } ) {
+            var response = (
+                id: id,
+                result: result ?? { NilResponse() }
+            );
+            
+            this.prSendMessage(response);
+        }
     }
     
     prHandleRequest {
@@ -298,7 +311,7 @@ LSPConnection {
         var message;
         
         try {
-            message = dict.toJSON();
+            message = dict.lsp_toJSON();
         } {
             |e|
             // Since JSON encoding JUST failed, lets avoid doing it again...
@@ -317,7 +330,8 @@ LSPConnection {
     
     prSendMessage {
         |dict|
-        var maxSize = 6000;
+		// Reccomended max UDP packet size (probably doesn't matter so much if its localhost)
+        var maxSize = 508;
         var offset = 0;
         var packetSize;
         var message = this.prEncodeMessage(dict);
@@ -329,7 +343,7 @@ LSPConnection {
             socket.sendRaw(message);
         } {
             while { offset < messageSize } {
-                packetSize = min(messageSize, maxSize);
+                packetSize = min(messageSize - offset, maxSize);
                 socket.sendRaw(message[offset..(offset + packetSize - 1)]);
                 offset = offset + packetSize;
             }
@@ -339,7 +353,7 @@ LSPConnection {
 }
 
 NilResponse {
-    toJSON {
+    lsp_toJSON {
         ^"null"
     }
     // Placeholder for nil responses, since nil signifies an empty slot in a dictionary.
